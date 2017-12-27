@@ -1,0 +1,154 @@
+#!/bin/bash
+set -eu
+IFS="$(printf '\n\t')"
+
+function BRIEF-USAGE {
+    cat << '_EOF_'
+SUMMARY
+    body - Print the lines of each <file> between its head and tail.
+
+USAGE
+    body [-t <num> | --top <num>] [-b <num> | --bot <num>] <file>...
+    body --help
+_EOF_
+}
+
+function USAGE {
+    cat << '_EOF_'
+NAME
+    body - Print the lines of each <file> between its head and tail.
+
+SYNOPSIS
+    body [-t <num> | --top <num>] [-b <num> | --bot <num>] <file>...
+    body --help
+
+DESCRIPTION
+    Print the lines of each <file> between its head and tail.
+    
+    As the `head' command prints the first <n> lines of a file and the `tail'
+    command prints the last <n> lines of a file, it only makes sense for there
+    to be a `body' command that prints the stuff in between. The options specify
+    where to begin and end printing; these limits are inclusive, and the top
+    line of the file is line 0. If a negative number or a number larger than the
+    total number of lines is given, the command wraps; that is, the line number
+    used is the given number modulo the total number of lines. (For example,
+    `body --top=4 --bot=-2' will print the file contents from the fifth line to
+    the second to last line, inclusive.) The `--top' option defaults to 0, while
+    the `--bot' option defaults to -1.
+
+    If the top line modulo the total is larger than the bottom line modulo the
+    total, the lines are printed in reverse. Note that this may not necessarily
+    happen if the top line is larger than the bottom line; only their modded
+    values count. `body --top=0 --bot=-1', for example, does *not* print
+    reversed lines.
+    
+    OPTIONS
+	-t, --top <num>    The first line to print; the top line is line 0.
+	    	  	   [default: 0]
+
+	-b, --bot <num>    The last line to print.
+	    	  	   [default: -1]
+
+	    --help	   View this message.
+
+    EXIT STATUS
+        0  if successful.
+	
+	1  if the options or their parameters have the wrong format.
+
+	2  if one or more of the <file>s don't exist.
+
+SEE ALSO
+    head, tail
+_EOF_
+}
+
+function check-file {
+    local file=$1
+    if [ ! -f "$file" ]; then
+	echo "ERROR: File \`${file}' does not exist."
+	return 2
+    fi
+}
+	     	     	  	    	 
+
+function check-param {
+    local param=$1
+    if [[ ! ("$param" =~ -?[0-9]+) ]]; then
+        echo "ERROR: The line numbers must be integers."
+	exit 1
+    fi
+}
+
+function getopt-fail {
+    local err=$1
+    if [ "$err" -eq 1 ]; then
+        echo "$(BRIEF-USAGE)"
+        exit 1
+    else
+        echo "ERROR: Internal error in getopt!! PANIC!"
+        exit 3
+    fi
+}
+
+
+short_opts="t:b:"
+long_opts="top:,bot:,help"
+args=$(getopt -o "$short_opts" -l "$long_opts" -n $0 -- "$@") || getopt-fail $?
+eval set -- "$args"
+
+top_flag=0;bot_flag=0
+help_flag=0
+opt_flag=1;param_flag=0
+
+while true; do
+    case "$1" in
+	-t|--top )
+	    top_flag=1
+	    top="$2"
+	    shift 2 ;;
+	-b|--bot )
+	    bot_flag=1
+	    bot="$2"
+	    shift 2 ;;
+	--help )
+	    help_flag=1
+	    break ;;
+	-- )
+	    opt_flag=0
+	    shift
+	    break ;;
+	* )
+	    echo "ERROR: Internal error in option extraction!! PANIC!"
+	    exit 3 ;;
+    esac
+done
+param_flag=$(((1-$opt_flag)*$#))
+if [ "$help_flag" -eq 1 ]; then
+    echo "$(USAGE)"
+    exit 0
+fi
+if [ "$param_flag" -eq 0 ]; then
+    echo "$(BRIEF-USAGE)"
+    exit 1
+fi
+
+[ "$top_flag" -eq 0 ] && top=0
+[ "$bot_flag" -eq 0 ] && bot=-1
+check-param "$top"
+check-param "$bot"
+
+fail=0
+for file in $@; do
+    check-file "$file" || { fail=1; continue; }
+    length=$(grep -c '' "$file")
+    let top_line="$top % $length"
+    let bot_line="$bot % $length"
+    if [ $# -ne 1 ]; then
+	echo "==> ${file} <=="
+    fi
+    echo "$(echo "$(head -n $(($bot_line+1)) "$file")" | tail -n $(($bot_line - $top_line + 1)))"
+done
+
+exit $fail
+

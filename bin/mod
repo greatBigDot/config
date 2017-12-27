@@ -1,0 +1,130 @@
+#!/bin/bash
+set -ue
+IFS="$(printf '\n\t')"
+
+
+function BRIEF-USAGE {
+    cat << '_EOF_'
+SUMMARY
+    mod - Compute the first argument module the second. Competently.
+
+USAGE
+    mod [--incompetent] <dividend> <divisor>
+    mod --help
+_EOF_
+}
+
+function USAGE {
+    cat << '_EOF_'
+NAME
+    mod - Compute the first argument modulo the second. Competently.
+
+SYNOPSIS
+    mod [--incompetent] <dividend> <divisor>
+    mod --help
+
+DESCRIPTION
+    Compute the first argument modulo the second. Competently.
+
+    It has come to my attention that the standard bash modulo function was
+    designed incompetently, from a mathematical perspective. x modulo y is equal
+    to the remainder of x divided by y, such that the function f : R -> R as
+    defined by f_y(x) = x modulo y has the range [0,y) for positive y and the
+    range (y,0] for negative y (the function is undefined for y=0). For example,
+    -4 modulo +3 = +2, because -4 = (-2)*3 + 2. Yet, for some inexplicable
+    reason, `echo ((-4 % 3))' returns -1. This command is intended to fix this
+    oversight.
+
+    For those wishing to stick to more traditional behavior, the --incompetent
+    flag can be used.
+
+    OPTIONS
+        --incompetent    Makes this function equivalent to bash's built in
+			 modulo function.
+
+        --help           View this message.
+
+    EXIT STATUS
+        0  if successful.
+	1  if modding by 0 was attempted.
+	2  if args improperly formatted.
+	3  if internal error in getopt.
+	4  if successful, but the --incompetent option was used.
+	5  if modding by 0 was attempted, and the --incompetent option was used.
+	6  if args improperly formatted, and the --incompetent option was used.
+	7  if internal error in getopt, and the --incompetent option was used.
+
+
+SEE ALSO
+    body
+_EOF_
+}
+
+function getopt-fail {
+    local err=$1
+    if [ "$err" -eq 1 ]; then
+        echo "$(BRIEF-USAGE)"
+        exit $((2+4*$incompetency))
+    else
+        echo "ERROR: Internal error in getopt."
+        exit $((3+4*$incompetency))
+    fi
+}
+
+function check-competency {
+    local args="$@"
+    if [[ $args =~ \s--incompetent\s ]]; then
+	out=1
+    else
+	out=0
+    fi
+    echo $out
+}
+
+long_opts="incompetent,help"
+short_opts=''    # I think the -o option is required; getopt breaks without it.
+incompetency=$(check-competency "$@")
+echo "$@"
+echo $incompetency
+args=$(getopt -o "$short_opts" -l "$long_opts" -n $0 -- "$@") || getopt-fail $?
+eval set -- "$args"    # I have no idea why the "eval" is necessary here.
+
+incompetency=0
+help_flag=0
+opt_flag=1;param_flag=0
+fail=0
+
+while true ; do
+    case "$1" in
+	--incompetent )
+	    incompetency=1
+	    shift ;;
+	--help )
+	    help_flag=1
+	    shift
+	    break ;;
+	-- )
+	    opt_flag=0
+	    shift
+	    break ;;
+	* )
+	    fail=1
+	    shift ;;
+    esac
+done
+echo $help_flag
+if [ "$fail" -eq 1 ]; then
+    echo "ERROR: Internal error in option extraction."
+    exit $((3+4*$incompetency))
+fi
+if [ "$help_flag" -eq 1 ]; then
+    echo "$(USAGE)"
+    exit 0    # even in case of incompetency
+fi
+if [ "$#" -ne 2 ]; then
+    echo "$(BRIEF-USAGE)"
+    exit $((2+4*$incompetency))
+fi
+
+m=$1
+n=$2

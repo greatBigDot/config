@@ -1,0 +1,365 @@
+#!/bin/bash
+set -eu
+IFS="$(printf '\n\t')"
+
+
+################################################################################
+######################### ERROR HANDLING AND TEXT DATA #########################
+################################################################################
+
+# god i hate bash
+# *sigh...* scroll down to see the actual relevant code. It's a long way down.
+
+# TODO: Figure out what to do about permissions.
+
+# A bunch of functions for checking argument formats and file existence and
+# whatnot; upon failure, the script exits.
+
+
+function BRIEF-USAGE {
+    cat << '_EOF_'
+SUMMARY
+    haskell-release - Release new version of a Haskell package.
+
+USAGE
+    haskell-release (-b <lvl> | --bump <lvl>) (-m <msg> | --message <msg>)
+                      [-p <dir> | --package <dir>] [--cabal <cbl>] [--local]
+    haskell-release (-v <vrs> | --version <vrs>) (-m <msg> | --message <msg>)
+                      [-p <dir> | --package <dir>] [--cabal <cbl>] [--local]
+    haskell-release --help
+_EOF_
+}
+
+function USAGE {
+    cat << '_EOF_'
+NAME
+    haskell-release - Release new version of a Haskell package.
+
+SYNOPSIS
+    haskell-release (-b <lvl> | --bump <lvl>) (-m <msg> | --message <msg>)
+                      [-p <dir> | --package <dir>] [--cabal <cbl>] [--local]
+    haskell-release (-v <vrs> | --version <vrs>) (-m <msg> | --message <msg>)
+                      [-p <dir> | --package <dir>] [--cabal <cbl>] [--local]
+    haskell-release --help
+
+DESCRIPTION
+    Release new version of a Haskell package.
+
+    The release is performed by running the necessary cabal and git commands and
+    updating the corresponding log files. Specifically, the following actions
+    are taken:
+
+    * Update log files
+      * ChangeLog.md: Append release message and mark it with the new version
+        number and the current date.
+      * ${cbl}.cabal: Edit version number field.
+    * Run cabal commands
+      * cabal configure
+      * cabal build
+      * cabal install
+    * Run git commands
+      * git add .
+      * git commit -m ${msg}
+      * git push
+
+    The new version number and the release message are required arguments. The
+    version can be specified manually with the -v option or increased
+    automatically with the -b option; the message is specified with the -m
+    option (see below).
+
+    If no package directory is specified with the -p option (see below), the
+    present working directory is assumed. The name of the .cabal file is found
+    by extracting the name of the last directory in the package path. This
+    behavior can be overriden with the --cabal option (see below).
+
+    OPTIONS
+        -b, --bump <lvl>       Bump version number: increase the specified
+                               section of the version field by 1 (with lvl=0
+                               being the most significant section). See
+                               https://pvp.haskell.org.
+
+        -v, --version <vrs>    The new version number.
+
+        -m, --message <msg>    Set the release message to be used in the git
+                               commit and in the ChangeLog.md entry.
+
+        -p, --package <dir>    The path to the package directory.
+                               [default: ${PWD}]
+
+            --cabal <cbl>      The name of the .cabal file.
+                               [default: $(basename ${dir})]
+
+            --local            Do not push to the remote repository.
+
+            --help             View this message.
+
+    EXIT STATUS
+        0  if successful; deprecated.
+
+        1  if the options or parameters have the wrong format.
+
+        2  if there is an error outside the program's control; for example, if a
+           file is missing or the current version number in the cabal file has
+           an invalid format.
+
+        3  if there was an internal error caused by bad programming; if this
+           occurs, fix this script and/or give up.
+
+SEE ALSO
+    git-create
+_EOF_
+}
+
+function check-cur-ver {
+    local cur_ver=$1
+    if [[ ! ( "$cur_ver" =~ ^[0-9]+(\.[0-9]+)*[[:space:]]*$ ) ]]; then
+        echo "ERROR: Current version number has an invalid format: ${cur_ver}"
+        echo -n "${cur_ver}" > /dev/clipboard
+        echo "Use --help for usage."
+        exit 2
+    fi
+}
+
+function check-bump {
+    local bump=$1
+    if [ ! "$bump" -ge 0 ]; then
+        echo "ERROR: The parameter for --bump must be a nonnegative integer."
+        echo "Use --help for usage."
+        exit 1
+    fi
+}
+
+function check-version {
+    local version=$1
+    if [[ ! ( "$version" =~ ^[0-9]+(\.[0-9]+)*$ ) ]]; then
+        echo -n "ERROR: The parameter for --version must be a dot-seperated"
+        echo " string of integers."
+        echo "Use --help for usage."
+        exit 1
+    fi
+}
+
+function check-name {
+    local name=$1
+    if [[ ! ( "$name" =~ ^[0-9a-z\-]*$ ) ]]; then
+        echo -n "ERROR: The cabal name can contain only alphanumeric characters"
+        echo " and hyphens (-)."
+        echo "Use --help for usage."
+        exit 1
+    fi
+}
+
+function check-dir {
+    local dir=$1
+    if [ ! -d "$dir" ]; then
+        echo "ERROR: The directory \`$dir' does not exist."
+        echo "Use --help for usage."
+        exit 2
+    fi
+}       
+
+function check-file {
+    local dir=$1
+    local file=$2
+    if [ ! -f "${dir}/${file}" ]; then
+        echo "ERROR: The file \`$file' does not exist in the directory \`$dir'."
+        echo "Use --help for usage."
+        exit 2
+    fi
+}
+
+# Check for failures in the other commands being called within this script; the
+# script exits upon failure. Most of these things (the ones with an exit status
+# of 3) should only be run in case of programmer or filesystem error.
+
+function getopt-fail {
+    local err=$1
+    if [ "$err" -eq 1 ]; then
+        echo "$(BRIEF-USAGE)"
+        exit 1
+    else
+        echo "ERROR: Internal error in getopt!! PANIC!"
+        exit 3
+    fi
+}
+
+function awk-fail {
+    # local err=$1
+    echo "ERROR: Internal error in awk!! PANIC!"
+    exit 3
+}
+
+function sed-fail {
+    # local err=$1
+    echo "ERROR: Internal error in sed!! PANIC!"
+    exit 3
+}
+
+function other-fail {
+    echo "ERROR: Internal error in git and/or cabal!! PANIC!"
+    exit 3
+}
+
+
+################################################################################
+############################# IMPORTANT FUNCTIONS ##############################
+################################################################################
+
+# Honestly bash is so inefficient at function calling that there might be no net
+# gain to this, despite the modularity benefits.
+# Scroll down a little more for the actual start of the script.
+
+
+# Bumps the version number. $1: the current version number; $2: which section to
+# increase (0-indexed).
+function bump-by {
+    local cur_ver="$1"; local n="$2"
+    local _bumped_=$(echo -n "$cur_ver"|awk -v loc=$(("$n"+1)) -- '
+        BEGIN      {RS="."; ORS="."}
+        FNR <  loc {out=$0}
+        FNR == loc {out=$0+1}
+        FNR >  loc {out=0}
+        {print out}') || awk-fail $?
+    local bumped=$(echo -n "$_bumped_"|sed -E -e 's/.$//g') || sed-fail $?
+    echo -n "$bumped"
+    # Within brackets, `.' isn't special:
+    # local len=$((1+$(expr length "$(echo -n "$cur_ver"|sed -E -e 's/[^.]//g')")))
+}
+
+# If the user wanta to specify the cabal file manually, they can type its name
+# with or without the extension.
+# TODO: There's definitely a more compact way to do this.
+function parse-cabal {
+    local cabal_name=$1
+    if [[ "$cabal_name" =~ ^.*\.cabal$ ]]; then
+        local len=${#cabal_name}
+        cabal_name=${cabal_name:0:$(($len-7))}
+    fi
+    echo -n "$cabal_name"
+}
+
+
+################################################################################
+############################## THE ACTUAL SCRIPT ###############################
+################################################################################
+
+# The actual meat of this script comprises a grand total of 32% of the file. And
+# to be honest most of this is just boilerplate filler crap anyway.
+# This entire thing would take like a dozen lines--max--in any halfway decent
+# language.
+
+
+# TODO: Don't hardcode this
+LOG="ChangeLog.md"
+
+short_opts="m:v:b:p:"
+long_opts="message:,version:,bump:,package:,cabal:,local,help"
+args=$(getopt -o "$short_opts" -l "$long_opts" -n $0 -- "$@") || getopt-fail $?
+eval set -- "$args"    # I have no idea why the "eval" is necessary here.
+
+# I'm like 95% sure these will work together nicely:
+verbmp_flag=0;bump_flag=0
+# 0 if skipped, 1 if nonempty, -1 if empty:
+message_flag=0;package_flag=0;cabal_flag=0
+local_flag=0
+help_flag=0
+opt_flag=1;param_flag=0
+
+while true ; do
+    case "$1" in
+        -b|--bump )
+            bump="$2"
+            test -n "$2" && err=0 || err=1
+            verbmp_flag=$(("$verbmp_flag"+1-2*"$err"))
+            bump_flag=1
+            shift 2 ;;
+        -v|--version )
+            version="$2"
+            test -n "$2" && err=0 || err=1
+            verbmp_flag=$(("$verbmp_flag"+1-2*"$err"))
+            shift 2 ;;
+        -m|--message )
+            message="$2"
+            test -n "$2" && err=0 || err=1
+            message_flag=$((1-2*"$err"))
+            shift 2 ;;
+        -p|--package )
+            package_dir="$2"
+            test -n "$2" && err=0 || err=1
+            package_flag=$((1-2*"$err"))
+            shift 2 ;;
+        --cabal )
+            cabal_name=$(parse-cabal "$2")
+            test -n "$2" && err=0 || err=1
+            cabal_flag=$((1-2*"$err"))
+            shift 2 ;;
+        --local )
+            local_flag=1
+            shift 1 ;;
+        --help )
+            help_flag=1
+            shift 1
+            break ;;
+        -- )
+            opt_flag=0
+            shift
+            break ;;
+        * )
+            echo "ERROR: Internal error in option extraction!! PANIC!"
+            exit 3 ;;
+    esac
+done
+param_flag=$(((1-$opt_flag)*$#))
+if [ "$help_flag" -eq 1 ]; then
+    echo "$(USAGE)"
+    exit 0
+fi
+if [ "$param_flag" -eq 1 ] || \
+       [ "$message_flag" -ne 1 ] || [ "$verbmp_flag" -ne 1 ] || \
+       [ "$package_flag" -lt 0 ] || [ "$cabal_flag" -lt 0 ]; then
+    #    echo $param_flag $message_flag $verbmp_flag $package_flag $cabal_flag
+    echo "$(BRIEF-USAGE)"
+    exit 1
+fi
+
+[ "$bump_flag" -eq 1 ] && check-bump "$bump" || check-version "$version"
+[ "$package_flag" -eq 0 ] && package_dir=$PWD
+[ "$cabal_flag" -eq 0 ] && cabal_name=$(basename "$package_dir")
+check-name "$cabal_name"
+check-dir "$package_dir"
+check-file "$package_dir" "${cabal_name}.cabal"
+cabal_path="${package_dir}/${cabal_name}.cabal"
+
+if [ "$bump_flag" -eq 1 ]; then
+    cur_ver="$(awk '/^version:/ {print $2}' "$cabal_path")" || awk-fail $?
+    check-cur-ver "$cur_ver"
+    version="$(bump-by "$cur_ver" "$bump")"
+fi
+
+check-file "${package_dir}" "${LOG}"
+cur_date="$(date -u +%F)"
+
+
+# Now, time to actually edit some files! Woo-hoo!
+sed -E -i -e "s/^(version:\\s*).*/\\1${version}/g" "$cabal_path" || sed-fail $?
+# Well, that's just about it. 1 line of content, 350+ lines of junk.
+# Oh wait, here's some other crap to take care of.
+
+# here-scripts just confuse me; I'm not sure how to make this more safe
+cat << _EOF_ >> "${package_dir}/${LOG}"
+
+
+## ${version} -- ${cur_date}
+
+$message
+_EOF_
+
+# TODO: Figure out how to do  this without 'cd'-ing.
+cd "$package_dir" ; cabal install > /dev/null || other-fail ; cd - > /dev/null
+echo 'yay'
+win_package_dir=$(cygpath -w "$package_dir")
+
+git -C "$win_package_dir" add .                              || other-fail
+git -C "$win_package_dir" commit -m "$message"               || other-fail
+git -C "$win_package_dir" tag -a "v${version}" -m "$message" || other-fail
+[ "$local_flag" -eq 0 ] && { git push "v${version}"          || other-fail; }
